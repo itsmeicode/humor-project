@@ -23,6 +23,9 @@ export default function GalleryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [authChecked, setAuthChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [votedCaptionIds, setVotedCaptionIds] = useState<(string | number)[]>(
+    []
+  );
 
   useEffect(() => {
     const supabase = getBrowserSupabaseClient();
@@ -31,7 +34,9 @@ export default function GalleryPage() {
       try {
         const { data: sessionData } = await supabase.auth.getSession();
 
-        if (!sessionData.session) {
+        const session = sessionData.session;
+
+        if (!session) {
           router.replace('/');
           return;
         }
@@ -39,30 +44,79 @@ export default function GalleryPage() {
         setAuthChecked(true);
 
         const {
-          data: captionData,
-          error: captionError,
+          data: existingVotes,
+          error: votesError,
+        } = await supabase
+          .from('caption_votes')
+          .select('caption_id')
+          .eq('profile_id', session.user.id);
+
+        if (votesError) {
+          setError(votesError.message);
+          return;
+        }
+
+        const alreadyVotedIds =
+          existingVotes?.map((v) => v.caption_id as string | number) ?? [];
+        setVotedCaptionIds(alreadyVotedIds);
+
+        const {
+          data: captionsData,
+          error: captionsError,
         } = await supabase
           .from('captions')
           .select('id, content, image_id')
           .eq('is_public', true)
+          .not('content', 'is', null)
+          .neq('content', '')
           .order('created_datetime_utc', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+          .limit(50);
 
-        if (captionError) {
-          setError(captionError.message);
+        if (captionsError) {
+          setError(captionsError.message);
           return;
         }
 
-        if (!captionData) {
-          setError('No captions found.');
+        const votedSet = new Set<string | number>(alreadyVotedIds);
+        const storedId =
+          typeof window !== 'undefined'
+            ? window.localStorage.getItem('currentCaptionId')
+            : null;
+
+        const chosen =
+          (storedId &&
+            captionsData?.find(
+              (c) =>
+                String(c.id) === storedId &&
+                !votedSet.has(c.id as string | number)
+            )) ||
+          captionsData?.find(
+            (c) => !votedSet.has(c.id as string | number)
+          ) ||
+          null;
+
+        if (!chosen) {
+          setError('No new captions to rate.');
           return;
         }
 
         setCaption({
-          id: captionData.id,
-          content: captionData.content,
-          image_id: captionData.image_id,
+          id: chosen.id,
+          content: chosen.content,
+          image_id: chosen.image_id,
+        });
+
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(
+            'currentCaptionId',
+            String(chosen.id)
+          );
+        }
+
+        console.log('Initial caption loaded:', {
+          id: chosen.id,
+          content: chosen.content,
+          image_id: chosen.image_id,
         });
 
         const {
@@ -71,7 +125,7 @@ export default function GalleryPage() {
         } = await supabase
           .from('images')
           .select('id, url')
-          .eq('id', captionData.image_id)
+          .eq('id', chosen.image_id)
           .maybeSingle();
 
         if (imagesError) {
@@ -91,6 +145,84 @@ export default function GalleryPage() {
 
     void load();
   }, [router]);
+
+  const loadNextCaption = async () => {
+    if (!caption) return;
+
+    try {
+      const supabase = getBrowserSupabaseClient();
+
+      const allVotedIds = [...votedCaptionIds, caption.id];
+
+      const {
+        data: nextCaptions,
+        error: nextCaptionsError,
+      } = await supabase
+        .from('captions')
+        .select('id, content, image_id')
+        .eq('is_public', true)
+        .not('content', 'is', null)
+        .neq('content', '')
+        .lt('id', caption.id)
+        .order('id', { ascending: false })
+        .limit(50);
+
+      if (nextCaptionsError) {
+        setError(nextCaptionsError.message);
+        return;
+      }
+
+      const votedSet = new Set<string | number>(allVotedIds);
+      const nextCaption =
+        nextCaptions?.find(
+          (c) => !votedSet.has(c.id as string | number)
+        ) || null;
+
+      if (!nextCaption) {
+        setError('No more captions to rate.');
+        return;
+      }
+
+      setCaption({
+        id: nextCaption.id,
+        content: nextCaption.content,
+        image_id: nextCaption.image_id,
+      });
+
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(
+          'currentCaptionId',
+          String(nextCaption.id)
+        );
+      }
+
+      console.log('Next caption loaded:', {
+        id: nextCaption.id,
+        content: nextCaption.content,
+        image_id: nextCaption.image_id,
+      });
+
+      const {
+        data: nextImage,
+        error: nextImageError,
+      } = await supabase
+        .from('images')
+        .select('id, url')
+        .eq('id', nextCaption.image_id)
+        .maybeSingle();
+
+      if (nextImageError) {
+        setError(nextImageError.message);
+      } else if (!nextImage) {
+        setError('No image found for this caption.');
+      } else {
+        setImage(nextImage);
+      }
+    } catch (err) {
+      console.error(err);
+      setError('Failed to load the next caption.');
+    }
+  };
 
   const handleSignOut = async () => {
     const supabase = getBrowserSupabaseClient();
@@ -153,7 +285,13 @@ export default function GalleryPage() {
           <p className="mb-4 text-center text-lg font-semibold text-gray-900">
             {caption.content}
           </p>
-          <CaptionVoteControls captionId={caption.id} />
+          <CaptionVoteControls
+            captionId={caption.id}
+            onVoted={() => {
+              setVotedCaptionIds((prev) => [...prev, caption.id]);
+              void loadNextCaption();
+            }}
+          />
         </div>
       </div>
     </main>

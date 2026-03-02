@@ -1,16 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getBrowserSupabaseClient } from '@/lib/supabaseBrowser';
 
 type CaptionVoteControlsProps = {
   captionId: string | number;
+  onVoted?: () => void;
 };
 
-export function CaptionVoteControls({ captionId }: CaptionVoteControlsProps) {
+export function CaptionVoteControls({
+  captionId,
+  onVoted,
+}: CaptionVoteControlsProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasVoted, setHasVoted] = useState(false);
+
+  useEffect(() => {
+    setError(null);
+  }, [captionId]);
 
   const handleVote = async (voteValue: number) => {
     setError(null);
@@ -27,24 +34,46 @@ export function CaptionVoteControls({ captionId }: CaptionVoteControlsProps) {
         return;
       }
 
-      if (!sessionData.session) {
+      const session = sessionData.session;
+
+      if (!session) {
         setError('Please sign in to vote on captions.');
         return;
       }
 
-      const { error: insertError } = await supabase.from('caption_votes').insert(
-        {
+      const userId = session.user.id;
+      console.log('Voting on caption:', {
+        captionId,
+        voteValue,
+        userId,
+      });
+      const now = new Date().toISOString();
+
+      const { error: insertError } = await supabase
+        .from('caption_votes')
+        .insert({
           caption_id: captionId,
           vote_value: voteValue,
-        }
-      );
+          profile_id: userId,
+          created_datetime_utc: now,
+          modified_datetime_utc: now,
+        });
 
       if (insertError) {
-        setError('Failed to record your vote. Please try again.');
+        console.error(insertError);
+
+        if (insertError.code === '23505' && onVoted) {
+          onVoted();
+          return;
+        }
+
+        setError(insertError.message);
         return;
       }
 
-      setHasVoted(true);
+      if (onVoted) {
+        onVoted();
+      }
     } catch (err) {
       console.error(err);
       setError('Something went wrong while voting. Please try again.');
@@ -54,26 +83,25 @@ export function CaptionVoteControls({ captionId }: CaptionVoteControlsProps) {
   };
 
   return (
-    <div className="flex items-center gap-3">
-      <button
-        type="button"
-        disabled={isSubmitting}
-        onClick={() => handleVote(-1)}
-        className="rounded-full border border-gray-300 px-4 py-2 text-base hover:bg-gray-50 disabled:opacity-60"
-      >
-        👎
-      </button>
-      <button
-        type="button"
-        disabled={isSubmitting}
-        onClick={() => handleVote(1)}
-        className="rounded-full border border-gray-300 px-4 py-2 text-base hover:bg-gray-50 disabled:opacity-60"
-      >
-        👍
-      </button>
-      {hasVoted && !error && (
-        <span className="text-sm text-gray-600">Thanks for voting!</span>
-      )}
+    <div className="flex flex-col items-center gap-2">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          disabled={isSubmitting}
+          onClick={() => handleVote(-1)}
+          className="rounded-full border border-gray-300 px-4 py-2 text-base hover:bg-gray-50 disabled:opacity-60"
+        >
+          👎
+        </button>
+        <button
+          type="button"
+          disabled={isSubmitting}
+          onClick={() => handleVote(1)}
+          className="rounded-full border border-gray-300 px-4 py-2 text-base hover:bg-gray-50 disabled:opacity-60"
+        >
+          👍
+        </button>
+      </div>
       {error && <span className="text-sm text-red-600">{error}</span>}
     </div>
   );
